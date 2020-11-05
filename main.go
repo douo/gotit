@@ -15,10 +15,6 @@ import (
 	"github.com/detailyang/go-fallocate"
 )
 
-type A struct {
-	N int
-}
-
 const MIN_SPLITE_SIZE = 1 * 1024 * 1024 // 1Mb
 const MAX_CONN = 10
 const BUF_SIZE = 1 * 1024 * 1024
@@ -77,11 +73,6 @@ func allocate(fd string, size int64) (*os.File, error) {
 		return nil, err
 	}
 	return file, nil
-}
-
-func isFileExist(fn string) bool {
-	_, err := os.Stat(fn)
-	return err == nil || os.IsExist(err)
 }
 
 func makesureTemp(target string) (*Temp, error) {
