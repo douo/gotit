@@ -7,12 +7,15 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/detailyang/go-fallocate"
+	"github.com/urfave/cli/v2"
 )
 
 const MIN_SPLITE_SIZE = 1 * 1024 * 1024 // 1Mb
@@ -21,9 +24,86 @@ const BUF_SIZE = 1 * 1024 * 1024
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Print(os.Args)
-	err := download(os.Args[1], "/tmp/gotit")
-	log.Print(err)
+	taskFlag := []cli.Flag{
+		&cli.Uint64Flag{
+			Name:  "min-split-size",
+			Value: 1 * 1024 * 1024,
+			Usage: "Mininmum size of reqeust content",
+		},
+		&cli.UintFlag{
+			Name:  "max-conn",
+			Value: 10,
+			Usage: "Maximum connection for single task",
+		},
+		&cli.UintFlag{
+			Name:  "buf-size",
+			Value: 1 * 1024 * 1024,
+			Usage: "Buffer for per connection",
+		},
+	}
+	app := &cli.App{
+		Name:  "gotit",
+		Usage: "multiple connection download tool make by golang",
+		Commands: []*cli.Command{
+			{
+				Name:    "download",
+				Aliases: []string{"d"},
+				Flags: append([]cli.Flag{
+					&cli.StringFlag{
+						Name:    "output",
+						Aliases: []string{"o"},
+						Usage:   "`File` to save content",
+					},
+				}, taskFlag...),
+				Usage:     "Download a resource from given `Url`",
+				ArgsUsage: "Url",
+				Action: func(c *cli.Context) error {
+					u, err := url.ParseRequestURI(c.Args().First())
+					if err != nil {
+						return err
+					}
+					config := Config{
+						MinSplitSize: c.Uint64("min-split-size"),
+						MaxConn:      c.Uint("max-conn"),
+						BufSize:      c.Uint("buf-size"),
+					}
+					o := c.String("output")
+					if o == "" {
+						o = path.Base(u.Path)
+					}
+					log.Print(u, config, o)
+					return nil
+
+				},
+			},
+			{
+				Name:      "resume",
+				Aliases:   []string{"r"},
+				Usage:     "Resume a imcomplete download from imcomplete output `File`",
+				Flags:     taskFlag,
+				ArgsUsage: "File",
+				Action: func(c *cli.Context) error {
+					log.Printf("resume:%q\n", c.Args().First())
+					return nil
+				},
+			},
+			{
+				Name:      "status",
+				Aliases:   []string{"s"},
+				Usage:     "print a download status from imcomplete file",
+				ArgsUsage: "File",
+				Action: func(c *cli.Context) error {
+					log.Printf("download:%q\n", c.Args().First())
+					return nil
+				},
+			},
+		},
+	}
+
+	err := app.Run(os.Args)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 type Temp struct {

@@ -1,38 +1,47 @@
 package main
 
-import "net/http"
+import (
+	"log"
+	"net/http"
+)
 
-type SimpleTask struct {
+type Config struct {
+	MinSplitSize uint64
+	MaxConn      uint
+	BufSize      uint
+}
+
+type Task struct {
 	client *http.Client
 	req    *http.Request
 	target string
 }
 
 type MultiTask struct {
-	SimpleTask
+	*Task
 	meta *Meta
 }
 
-func NewMultiTask(client *http.Client, req *http.Request, inspectHeader *http.Header, target string) (MultiTask, error) {
+func NewMultiTask(client *http.Client, req *http.Request, inspectHeader *http.Header, target string, length uint64) (*MultiTask, error) {
 	meta := &Meta{
-		url : req.URL.String(),
-		file : target
-		size : length
+		url:  req.URL.String(),
+		file: target,
+		size: length,
 	}
 
 	err := meta.Restore(target)
-	if(err ==nil){
+	if err == nil {
 		log.Printf("Resume Download")
 	}
 
 	task := MultiTask{
-		client: client,
-		req: req,
-		target : target
-		meta : &Meta
+		&Task{
+			client: client,
+			req:    req,
+			target: target,
+		},
+		meta,
 	}
-}
-
-type Task interface {
-	Init
+	log.Print(task)
+	return nil, nil
 }
