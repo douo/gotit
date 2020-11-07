@@ -1,4 +1,4 @@
-package main
+package gotit
 
 import "os"
 
@@ -7,14 +7,14 @@ func isFileExist(fn string) bool {
 	return err == nil || os.IsExist(err)
 }
 
-func MaxInt(x, y int) int {
+func maxInt(x, y int) int {
 	if x > y {
 		return x
 	}
 	return y
 }
 
-func MaxUint64(x, y uint64) uint64 {
+func maxUint64(x, y uint64) uint64 {
 	if x > y {
 		return x
 	}

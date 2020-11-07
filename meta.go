@@ -1,4 +1,4 @@
-package main
+package gotit
 
 import (
 	"encoding/json"
@@ -30,7 +30,7 @@ func metaFile(target string) string {
   try to retore meta from target file
 */
 func (m *Meta) Restore(target string) error {
-	f, err := os.Open(tempfile(target))
+	f, err := os.Open(metaFile(target))
 	if err != nil {
 		return err
 	}
