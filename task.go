@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/detailyang/go-fallocate"
 )
@@ -19,9 +20,38 @@ type Config struct {
 }
 
 type Task struct {
-	client *http.Client
-	meta   *Meta
-	config Config
+	client    *http.Client
+	meta      *Meta
+	config    Config
+	startTime time.Time
+}
+
+// View model of task status
+type Status struct {
+	filename string
+	size     int64
+	speed    int64
+	duration time.Duration
+	progress []int64
+}
+
+// Return current status of task
+func (t *Task) status() Status {
+	d := time.Now().Sub(t.startTime)
+	return Status{
+		filename: t.meta.File,
+		speed:    int64(float64(t.meta.sum()) / d.Seconds()),
+		size:     t.meta.Size,
+		duration: d,
+		progress: t.meta.Progress,
+	}
+}
+
+func (s Status) pretty(w io.Writer) {
+	// FYI https://zh.wikipedia.org/wiki/ANSI%E8%BD%AC%E4%B9%89%E5%BA%8F%E5%88%97
+	fmt.Print(w, "\x1b[1A\x1b[2K\x1b[F\x1b[2K")
+	fmt.Fprintf(w, "%v\t%v/S\n", fmtDuration(s.duration), fmtSize(s.speed))
+	fmt.Fprintln(w, fmtProgress(s.progress, s.size))
 }
 
 type Block struct {
@@ -32,7 +62,7 @@ type Block struct {
 var errTaskExist error = errors.New("task already exist")
 
 func (t *Task) Start() error {
-	file, err := allocate(t.meta.File, t.meta.Size)
+	file, err := allocate(t.meta.File, int64(t.meta.Size))
 	if err != nil {
 		return nil
 	}
@@ -72,14 +102,15 @@ func (t *Task) Start() error {
 			go doRequest(ch, result, t.client, t.meta.Url, offset, length, t.config.BufSize)
 		}
 	}
+	t.startTime = time.Now()
 	count := 0
 	for {
 		select {
 		case b := <-ch:
 			file.WriteAt(b.byteValue, b.offset)
-
+			t.status().pretty(os.Stdout)
 			t.meta.updateProgress(b.offset, b.offset+int64(len(b.byteValue)))
-			log.Println(t.meta)
+
 			// t.meta.Save()
 		case c := <-result:
 			log.Printf("result:%d", c)
@@ -103,15 +134,13 @@ func doRequest(ch chan *Block, result chan int, client *http.Client, url string,
 	idx := 0
 	for n >= 0 && err != io.ErrUnexpectedEOF && err != io.EOF {
 		n, err = io.ReadFull(resp.Body, buf)
-
-		cpy := make([]byte, n)
-		copy(cpy, buf)
-		log.Println(err)
-		log.Println(offset, len(cpy), offset+int64(len(cpy)))
-		ch <- &Block{byteValue: cpy, offset: offset}
-		offset += int64(n)
-		idx = (idx + 1) % 2
-		// log.Printf("d:%d %v", n, err)
+		if n > 0 {
+			cpy := make([]byte, n)
+			copy(cpy, buf)
+			ch <- &Block{byteValue: cpy, offset: offset}
+			offset += int64(n)
+			idx = (idx + 1) % 2
+		}
 
 	}
 	result <- 1
