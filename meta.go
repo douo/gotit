@@ -53,7 +53,13 @@ func innerUpdateProgress(p []int64, start int64, end int64) []int64 {
 			return p
 		}
 		if start < p[i] {
-			//预设 end 小于 si，因为下载的content不会相交
+			//预设 end 小于 si
+			if end == p[i-1] {
+				// content 刚好重合
+				p[i-1] = start
+				return p
+			}
+			// content不会相交
 			break
 		}
 	}
@@ -62,6 +68,19 @@ func innerUpdateProgress(p []int64, start int64, end int64) []int64 {
 
 func (m *Meta) updateProgress(start int64, end int64) {
 	m.Progress = innerUpdateProgress(m.Progress, start, end)
+}
+
+func (m *Meta) sum() int64 {
+	p := m.Progress
+	sum := int64(0)
+	for i := 0; i < len(p); i += 2 {
+		sum += p[i+1] - p[i]
+	}
+	return sum
+}
+
+func (m *Meta) pretty() string {
+	return ""
 }
 
 /*
