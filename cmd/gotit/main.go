@@ -59,7 +59,6 @@ func main() {
 					if o == "" {
 						o = path.Base(u.Path)
 					}
-					log.Print(u, config, o)
 					task, err := gotit.NewTask(u.String(), o, config)
 					if err != nil {
 						return err

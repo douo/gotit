@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/detailyang/go-fallocate"
@@ -26,32 +27,20 @@ type Task struct {
 	startTime time.Time
 }
 
-// View model of task status
-type Status struct {
-	filename string
-	size     int64
-	speed    int64
-	duration time.Duration
-	progress []int64
-}
-
 // Return current status of task
 func (t *Task) status() Status {
 	d := time.Now().Sub(t.startTime)
+	sum := t.meta.sum()
+	speed := float64(sum) / d.Seconds()
 	return Status{
 		filename: t.meta.File,
-		speed:    int64(float64(t.meta.sum()) / d.Seconds()),
+		speed:    int64(speed),
 		size:     t.meta.Size,
-		duration: d,
+		percent:  float32(sum) / float32(t.meta.Size),
+		remain:   time.Duration(float64(t.meta.Size-sum)/float64(speed)*1000) * time.Millisecond,
+		elapse:   d,
 		progress: t.meta.Progress,
 	}
-}
-
-func (s Status) pretty(w io.Writer) {
-	// FYI https://zh.wikipedia.org/wiki/ANSI%E8%BD%AC%E4%B9%89%E5%BA%8F%E5%88%97
-	fmt.Print(w, "\x1b[1A\x1b[2K\x1b[F\x1b[2K")
-	fmt.Fprintf(w, "%v\t%v/S\n", fmtDuration(s.duration), fmtSize(s.speed))
-	fmt.Fprintln(w, fmtProgress(s.progress, s.size))
 }
 
 type Block struct {
@@ -77,8 +66,8 @@ func (t *Task) Start() error {
 	remainder := int(t.meta.Size % int64(conn))
 	splitSize := t.meta.Size / int64(conn)
 
-	ch := make(chan *Block)
-	result := make(chan int)
+	ch := make(chan *Block, 1)
+	wg := sync.WaitGroup{}
 
 	for i := 0; i < conn; i++ {
 		var offset int64
@@ -90,7 +79,7 @@ func (t *Task) Start() error {
 			} else {
 				length = splitSize + 1
 			}
-			go doRequest(ch, result, t.client, t.meta.Url, offset, length, t.config.BufSize)
+			go doRequest(ch, t.client, t.meta.Url, offset, length, t.config.BufSize)
 		} else {
 			offset = int64(i)*splitSize + int64(remainder)
 			if i < conn-1 {
@@ -99,31 +88,29 @@ func (t *Task) Start() error {
 				length = splitSize
 			}
 
-			go doRequest(ch, result, t.client, t.meta.Url, offset, length, t.config.BufSize)
+			go doRequest(ch, t.client, t.meta.Url, offset, length, t.config.BufSize)
 		}
 	}
 	t.startTime = time.Now()
-	count := 0
-	for {
-		select {
-		case b := <-ch:
-			file.WriteAt(b.byteValue, b.offset)
-			t.status().pretty(os.Stdout)
-			t.meta.updateProgress(b.offset, b.offset+int64(len(b.byteValue)))
-
-			// t.meta.Save()
-		case c := <-result:
-			log.Printf("result:%d", c)
-			count += 1
-			if count >= conn {
-				return nil
+	wg.Add(conn)
+	go func() {
+		for {
+			b := <-ch
+			if b != nil {
+				file.WriteAt(b.byteValue, b.offset)
+				t.meta.updateProgress(b.offset, b.offset+int64(len(b.byteValue)))
+				t.status().fmtStatusLine(os.Stdout)
+				t.meta.Save()
+			} else {
+				wg.Done()
 			}
 		}
-	}
-
+	}()
+	wg.Wait()
+	return nil
 }
 
-func doRequest(ch chan *Block, result chan int, client *http.Client, url string, offset int64, length int64, bufSize int) {
+func doRequest(ch chan *Block, client *http.Client, url string, offset int64, length int64, bufSize int) {
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 	req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", offset, offset+length))
 	log.Printf("download:%v", req.Header)
@@ -141,9 +128,8 @@ func doRequest(ch chan *Block, result chan int, client *http.Client, url string,
 			offset += int64(n)
 			idx = (idx + 1) % 2
 		}
-
 	}
-	result <- 1
+	ch <- nil
 }
 
 func NewTask(url string, output string, config Config) (*Task, error) {

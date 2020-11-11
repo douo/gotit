@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 )
@@ -101,9 +100,7 @@ func (m *Meta) Restore(target string) error {
 
 func (m *Meta) Save() error {
 	tf := metaFile(m.File)
-	log.Print(m)
 	byteValue, err := json.Marshal(m)
-	log.Print(string(byteValue))
 	if err != nil {
 		return err
 	}
