@@ -208,10 +208,9 @@ func (t *Task) Start() error {
 		length := segment[i]
 		go doRequest(ch, t.client, t.meta.Url, offset, length, t.config.BufSize)
 		offset += segment[i]
+		wg.Add(conn)
 	}
-
 	t.startTime = time.Now()
-	wg.Add(conn)
 	go func() {
 		for {
 			b := <-ch
