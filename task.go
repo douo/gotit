@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ type Config struct {
 type Task struct {
 	client    *http.Client
 	meta      *Meta
+	metaFile  os.File
 	config    Config
 	startTime time.Time
 }
@@ -46,16 +48,150 @@ func (t *Task) status() Status {
 type Block struct {
 	byteValue []byte
 	offset    int64
+	err       error
 }
 
-var errTaskExist error = errors.New("task already exist")
+func (t *Task) Resume() error {
+	file, err := os.OpenFile(t.meta.File, os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	mf, err := os.OpenFile(metaFile(t.meta.File), os.O_CREATE|os.O_WRONLY, 0611)
+	t.metaFile = *mf
+	if err != nil {
+		return err
+	}
+	defer t.metaFile.Close()
+
+	seg := make([]int64, len(t.meta.Progress)/2)
+	conn := t.config.MaxConn
+	for i := 0; i < len(seg); i++ {
+		var start int64
+		if i*2+2 >= len(t.meta.Progress) {
+			start = t.meta.Size
+		} else {
+			start = t.meta.Progress[i*2+2]
+		}
+		seg[i] = start - t.meta.Progress[i*2+1]
+	}
+	log.Println(seg, conn)
+	part := repartition(seg, conn)
+
+	ch := make(chan *Block, 1)
+	wg := sync.WaitGroup{}
+	for i := 0; i < len(seg); i++ {
+		conn = minInt(part[i], int(seg[i]/t.config.MinSplitSize))
+		segment := fastRepartition(seg[i], conn)
+		log.Println(part[i], segment)
+		offset := t.meta.Progress[2*i+1]
+		for j := 0; j < len(segment); j++ {
+			length := segment[j]
+			go doRequest(ch, t.client, t.meta.Url, offset, length, t.config.BufSize)
+			offset += segment[j]
+			wg.Add(conn)
+		}
+	}
+	t.startTime = time.Now()
+	go func() {
+		for {
+			b := <-ch
+			if b != nil {
+				file.WriteAt(b.byteValue, b.offset)
+				t.meta.updateProgress(b.offset, b.offset+int64(len(b.byteValue)))
+				t.status().fmtStatusLine(os.Stdout)
+				t.meta.Save(t.metaFile)
+			} else {
+				wg.Done()
+			}
+		}
+	}()
+	wg.Wait()
+
+	return nil
+
+}
+
+// n 个连续的大小不等的段，m 个链接
+// 每个链接只下载一个连续段
+// 按段的大小分配链接 m
+// n = 1  min(m,size_n/split)
+// m <= n :[1,1,....0,0] m 个 1, n-m 个 0
+// m > n n = [51,50,1,1] m = 6 -> [2,2,1,1]
+func repartition(s []int64, c int) []int {
+	result := make([]int, len(s))
+	if c <= len(s) {
+		// m <= n :[1,1,....0,0] m 个 1, n-m 个 0
+		for i := 0; i < c; i++ {
+			result[i] = 1
+		}
+	} else {
+		c = c + 1 - len(s) // - len 是因为每个 segment 至少有一个链接
+
+		sum := int64(0)
+		for i := 0; i < len(s); i++ {
+			sum += s[i]
+		}
+		for i := 0; i < len(s); i++ {
+			result[i] = int(s[i]*int64(c)/sum) + 1
+		}
+		type R struct {
+			v int64
+			i int
+		}
+		r := make([]R, len(s))
+		for i := 0; i < len(s); i++ {
+			r[i] = R{
+				v: (s[i] * int64(c)) % sum,
+				i: i,
+			}
+		}
+		sort.Slice(r, func(i, j int) bool { return r[i].v > r[j].v })
+
+		sumR := int64(0)
+		for i := 0; i < len(s); i++ {
+			sumR += r[i].v
+		}
+		n := int(sumR/sum) - 1
+
+		for i := 0; i < n; i++ {
+			result[r[i].i] += 1
+		}
+	}
+	return result
+}
+
+// 将 total 平均分为 c 份
+func fastRepartition(total int64, c int) (result []int64) {
+	r := int(total % int64(c)) //remainder
+	s := total / int64(c)
+	result = make([]int64, c)
+	for i := 0; i < c; i++ {
+		if i < r {
+			result[i] = s + 1
+		} else {
+			result[i] = s
+		}
+	}
+	return
+}
+
+var TaskExist error = errors.New("task already exist")
 
 func (t *Task) Start() error {
 	file, err := allocate(t.meta.File, int64(t.meta.Size))
 	if err != nil {
-		return nil
+		return err
 	}
-	log.Printf("allocaed:%d", t.meta.Size)
+	defer file.Close()
+
+	mf, err := os.OpenFile(metaFile(t.meta.File), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0611)
+	t.metaFile = *mf
+	if err != nil {
+		return err
+	}
+	defer t.metaFile.Close()
 
 	var conn int
 	if t.meta.SupportRange {
@@ -63,34 +199,17 @@ func (t *Task) Start() error {
 	} else {
 		conn = 1
 	}
-	remainder := int(t.meta.Size % int64(conn))
-	splitSize := t.meta.Size / int64(conn)
-
+	segment := fastRepartition(t.meta.Size, conn)
+	log.Print(segment)
 	ch := make(chan *Block, 1)
 	wg := sync.WaitGroup{}
-
-	for i := 0; i < conn; i++ {
-		var offset int64
-		var length int64
-		if i < remainder {
-			offset = int64(i) * (splitSize + 1)
-			if i < conn-1 {
-				length = splitSize
-			} else {
-				length = splitSize + 1
-			}
-			go doRequest(ch, t.client, t.meta.Url, offset, length, t.config.BufSize)
-		} else {
-			offset = int64(i)*splitSize + int64(remainder)
-			if i < conn-1 {
-				length = splitSize - 1
-			} else {
-				length = splitSize
-			}
-
-			go doRequest(ch, t.client, t.meta.Url, offset, length, t.config.BufSize)
-		}
+	var offset int64 = 0
+	for i := 0; i < len(segment); i++ {
+		length := segment[i]
+		go doRequest(ch, t.client, t.meta.Url, offset, length, t.config.BufSize)
+		offset += segment[i]
 	}
+
 	t.startTime = time.Now()
 	wg.Add(conn)
 	go func() {
@@ -100,7 +219,7 @@ func (t *Task) Start() error {
 				file.WriteAt(b.byteValue, b.offset)
 				t.meta.updateProgress(b.offset, b.offset+int64(len(b.byteValue)))
 				t.status().fmtStatusLine(os.Stdout)
-				t.meta.Save()
+				t.meta.Save(t.metaFile)
 			} else {
 				wg.Done()
 			}
@@ -132,11 +251,26 @@ func doRequest(ch chan *Block, client *http.Client, url string, offset int64, le
 	ch <- nil
 }
 
+func ResumeTask(output string, config Config) (*Task, error) {
+	meta := &Meta{}
+	err := meta.Restore(output)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{}
+	// detech header
+	return &Task{
+		client: client,
+		meta:   meta,
+		config: config,
+	}, nil
+}
+
 func NewTask(url string, output string, config Config) (*Task, error) {
 	meta := &Meta{}
 	err := meta.Restore(output)
 	if err == nil {
-		return nil, errTaskExist
+		return nil, TaskExist
 	}
 
 	client := &http.Client{}
@@ -162,7 +296,7 @@ func NewTask(url string, output string, config Config) (*Task, error) {
 }
 
 func IsTaskExist(err error) bool {
-	return err == errTaskExist
+	return err == TaskExist
 }
 
 func contentLength(resp *http.Response) (i int64, err error) {

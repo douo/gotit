@@ -74,8 +74,17 @@ func main() {
 				Flags:     taskFlag,
 				ArgsUsage: "File",
 				Action: func(c *cli.Context) error {
-					log.Printf("resume:%q\n", c.Args().First())
-					return nil
+					output := c.Args().First()
+					config := gotit.Config{
+						MinSplitSize: c.Int64("min-split-size"),
+						MaxConn:      c.Int("max-conn"),
+						BufSize:      c.Int("buf-size"),
+					}
+					task, err := gotit.ResumeTask(output, config)
+					if err != nil {
+						return err
+					}
+					return task.Resume()
 				},
 			},
 			{
@@ -84,7 +93,6 @@ func main() {
 				Usage:     "print a download status from imcomplete file",
 				ArgsUsage: "File",
 				Action: func(c *cli.Context) error {
-					log.Printf("download:%q\n", c.Args().First())
 					return nil
 				},
 			},

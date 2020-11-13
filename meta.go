@@ -98,17 +98,13 @@ func (m *Meta) Restore(target string) error {
 	return json.Unmarshal(byteValue, m)
 }
 
-func (m *Meta) Save() error {
-	tf := metaFile(m.File)
+func (m Meta) Save(f os.File) error {
+	f.Truncate(0)
+	f.Seek(0, 0)
 	byteValue, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(tf, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0611)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
 	_, err = f.Write(byteValue)
 	return err
 }
